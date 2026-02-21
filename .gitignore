@@ -6,9 +6,17 @@ __pycache__/
 venv/
 
 # Data and reports
-/data/
-/reports/
-*.sqlite
+/data/*
+!/data/stargazers.sqlite
+
+/reports/*
+!/reports/report.md
+!/reports/figures/
+!/reports/figures/*
+!/reports/data/
+!/reports/data/*
+!/reports/live/
+!/reports/live/*
 
 # Environment
 .env

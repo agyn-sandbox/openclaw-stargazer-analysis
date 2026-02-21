@@ -48,11 +48,25 @@ class GithubRestClient:
         response = self._request("GET", path, allow_not_found=True)
         if response is None:
             return None
+
         data = response.json()
+        account_type = data.get("type")
+        verified_badge: Optional[bool] = None
+
+        if account_type == "Organization":
+            org_path = f"/orgs/{login}"
+            org_response = self._request("GET", org_path, allow_not_found=True)
+            if org_response is not None:
+                org_data = org_response.json()
+                verified_value = org_data.get("is_verified")
+                if verified_value is not None:
+                    verified_badge = bool(verified_value)
+
         return {
             "site_admin": data.get("site_admin", False),
             "site": data.get("blog") or data.get("html_url"),
-            "type": data.get("type"),
+            "type": account_type,
+            "verified_badge": verified_badge,
         }
 
     def fetch_recent_public_events(
