@@ -52,16 +52,20 @@ class GithubRestClient:
 
         data = response.json()
         account_type = data.get("type")
-        verified_badge: Optional[bool] = None
+        verified_badge = self._coerce_optional_bool(data.get("verified"))
+        if verified_badge is None:
+            verified_badge = self._coerce_optional_bool(data.get("is_verified"))
 
         if account_type == "Organization":
             org_path = f"/orgs/{login}"
             org_response = self._request("GET", org_path, allow_not_found=True)
             if org_response is not None:
                 org_data = org_response.json()
-                verified_value = org_data.get("is_verified")
-                if verified_value is not None:
-                    verified_badge = bool(verified_value)
+                org_verified = self._coerce_optional_bool(org_data.get("is_verified"))
+                if org_verified is None:
+                    org_verified = self._coerce_optional_bool(org_data.get("verified"))
+                if org_verified is not None:
+                    verified_badge = org_verified
 
         return {
             "site_admin": bool(data.get("site_admin", False)),
@@ -188,6 +192,23 @@ class GithubRestClient:
     def _compute_backoff(self, attempt: int) -> float:
         ceiling = min(self.backoff_max, self.backoff_min * (2**attempt))
         return random.uniform(self.backoff_min, ceiling)
+
+    @staticmethod
+    def _coerce_optional_bool(value: Optional[object]) -> Optional[bool]:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes"}:
+                return True
+            if lowered in {"false", "0", "no"}:
+                return False
+        if isinstance(value, (int, float)):
+            if value == 1:
+                return True
+            if value == 0:
+                return False
+        return None
 
     @staticmethod
     def _safe_int(value: Optional[object]) -> Optional[int]:

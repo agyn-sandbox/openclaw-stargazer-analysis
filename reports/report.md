@@ -6,7 +6,7 @@
 - Likely bots (score ≥60): **47 (0.5%)**
 - Suspicious (score 40–59): **581 (5.8%)**
 - Likely human (score ≤39): **9372 (93.7%)**
-- Top locations: Germany (61), China (57), India (54), Beijing (51), London (37)
+- Top locations: Germany (61), China (56), India (54), Beijing (53), London (37)
 
 ## Methodology
 - Fetched stargazers via GitHub GraphQL with deterministic pagination and rate-limit handling.
@@ -20,7 +20,7 @@
   +10 for blank profiles, −30 for site-admin verified staff.
 
 ## Results
-- Average account age: **2205 days** (enriched sample).
+- Average account age: **2209 days** (enriched sample).
 - Average followers: **16.7** (enriched sample).
 - Public event sampling coverage: **0.0%** of users.
 - ![Bot labels](figures/bot_label_distribution.png)
@@ -41,4 +41,4 @@
 ## Appendix
 - Data exports available in `reports/data`.
 - Figures saved in `reports/figures`.
-- Report generated at 2026-02-21 22:54 UTC.
+- Report generated at 2026-02-21 23:22 UTC.
