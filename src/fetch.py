@@ -223,7 +223,10 @@ class FetchRunner:
         user.public_gists_count = snapshot.public_gists
         user.hireable = snapshot.hireable
         user.email_public = snapshot.email_public
-        user.verified_badge = snapshot.verified
+        if snapshot.verified is not None:
+            user.verified_badge = snapshot.verified
+        elif user.verified_badge is None:
+            user.verified_badge = False
         if snapshot.site:
             user.site = snapshot.site
 
@@ -261,6 +264,14 @@ class FetchRunner:
         user.site_admin = bool(profile.get("site_admin", False))
         if profile.get("site"):
             user.site = profile["site"]
+        profile_type = profile.get("type")
+        if profile_type:
+            user.type = str(profile_type)
+        verified_badge = profile.get("verified_badge")
+        if verified_badge is not None:
+            user.verified_badge = bool(verified_badge)
+        elif profile_type != "Organization" and user.verified_badge is None:
+            user.verified_badge = False
 
     def _collect_events(self, session: Session, fetch_run: FetchRun, user: User) -> None:
         if self.rest is None:
