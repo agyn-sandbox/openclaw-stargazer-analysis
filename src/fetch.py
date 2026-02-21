@@ -85,7 +85,10 @@ class FetchRunner:
                     fetch_run.rate_limit_limit = page.rate_limit.limit
                     fetch_run.rate_limit_remaining = page.rate_limit.remaining
                     fetch_run.rate_limit_reset_at = page.rate_limit.reset_at
-                    fetch_run.rate_limit_used = page.rate_limit.cost
+                    rate_limit_used = page.rate_limit.used
+                    if rate_limit_used is None:
+                        rate_limit_used = page.rate_limit.cost
+                    fetch_run.rate_limit_used = rate_limit_used
                     session.flush()
 
             except Exception as exc:
@@ -272,6 +275,46 @@ class FetchRunner:
             user.verified_badge = bool(verified_badge)
         elif profile_type != "Organization" and user.verified_badge is None:
             user.verified_badge = False
+
+        name = profile.get("name")
+        if name is not None:
+            user.name = name
+        bio = profile.get("bio")
+        if bio is not None:
+            user.bio = bio
+        company = profile.get("company")
+        if company is not None:
+            user.company = company
+        location = profile.get("location")
+        if location is not None:
+            user.location = location
+
+        created_at = profile.get("created_at")
+        if created_at is not None:
+            user.created_at = created_at
+        updated_at = profile.get("updated_at")
+        if updated_at is not None:
+            user.updated_at = updated_at
+
+        followers = profile.get("followers_count")
+        if followers is not None:
+            user.followers_count = followers
+        following = profile.get("following_count")
+        if following is not None:
+            user.following_count = following
+        public_repos = profile.get("public_repos_count")
+        if public_repos is not None:
+            user.public_repos_count = public_repos
+        public_gists = profile.get("public_gists_count")
+        if public_gists is not None:
+            user.public_gists_count = public_gists
+
+        hireable = profile.get("hireable")
+        if hireable is not None:
+            user.hireable = hireable  # already bool/None from API
+        email_public = profile.get("email_public")
+        if email_public is not None:
+            user.email_public = bool(email_public)
 
     def _collect_events(self, session: Session, fetch_run: FetchRun, user: User) -> None:
         if self.rest is None:

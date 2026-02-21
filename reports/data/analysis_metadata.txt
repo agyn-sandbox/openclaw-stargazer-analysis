@@ -1,2 +1,4 @@
-generated_at=2026-02-21T20:25:48.245210+00:00
-rows=216000
+generated_at=2026-02-21T22:54:23.575521+00:00
+rows=10000
+counts_enriched=10000
+counts_coverage=1.000000
