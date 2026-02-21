@@ -256,6 +256,8 @@ class FetchRunner:
             return
 
         profile = self.rest.fetch_user_profile(user.login)
+        if profile is None:
+            return
         user.site_admin = bool(profile.get("site_admin", False))
         if profile.get("site"):
             user.site = profile["site"]
@@ -323,4 +325,3 @@ def main(argv: Optional[list[str]] = None) -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     main()
-

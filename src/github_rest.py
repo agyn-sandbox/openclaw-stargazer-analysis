@@ -43,9 +43,11 @@ class GithubRestClient:
         self.backoff_min = config.backoff_min_seconds
         self.backoff_max = config.backoff_max_seconds
 
-    def fetch_user_profile(self, login: str) -> Dict[str, object]:
+    def fetch_user_profile(self, login: str) -> Optional[Dict[str, object]]:
         path = f"/users/{login}"
-        response = self._request("GET", path)
+        response = self._request("GET", path, allow_not_found=True)
+        if response is None:
+            return None
         data = response.json()
         return {
             "site_admin": data.get("site_admin", False),
@@ -64,7 +66,14 @@ class GithubRestClient:
 
         for page in range(1, max_pages + 1):
             path = f"/users/{login}/events/public"
-            response = self._request("GET", path, params={"per_page": per_page, "page": page})
+            response = self._request(
+                "GET",
+                path,
+                params={"per_page": per_page, "page": page},
+                allow_not_found=True,
+            )
+            if response is None:
+                return last_activity, total_events
             events = response.json()
 
             if not isinstance(events, list):
@@ -85,7 +94,14 @@ class GithubRestClient:
 
         return last_activity, total_events
 
-    def _request(self, method: str, path: str, params: Optional[Dict[str, object]] = None) -> requests.Response:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: Optional[Dict[str, object]] = None,
+        *,
+        allow_not_found: bool = False,
+    ) -> Optional[requests.Response]:
         attempt = 0
         url = f"{self.api_url}{path}"
         while True:
@@ -96,6 +112,10 @@ class GithubRestClient:
             if response.status_code == 403 and rate_limit.remaining == 0:
                 self._sleep_until_reset(rate_limit)
                 continue
+
+            if allow_not_found and response.status_code in {404, 410}:
+                logger.info("Optional REST resource %s returned %s. Skipping.", path, response.status_code)
+                return None
 
             if response.status_code >= 500:
                 if attempt >= self.max_retries:
@@ -149,4 +169,3 @@ class GithubRestClient:
         if not value:
             return None
         return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
-

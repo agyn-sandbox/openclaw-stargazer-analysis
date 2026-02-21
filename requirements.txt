@@ -1,11 +1,7 @@
-alembic
 matplotlib
 pandas
 python-dotenv
 pytest
 requests
-requests-cache
 seaborn
 sqlalchemy
-tabulate
-tenacity

@@ -206,8 +206,10 @@ class MetricsRunner:
         return not any([user.name, user.bio, user.company])
 
     def _low_social_presence(self, user: User) -> bool:
-        followers = user.followers_count or 0
-        following = user.following_count or 0
+        followers = user.followers_count
+        following = user.following_count
+        if followers is None or following is None:
+            return False
         return followers <= 1 and following <= 1
 
     def _no_public_assets(self, user: User) -> bool:
