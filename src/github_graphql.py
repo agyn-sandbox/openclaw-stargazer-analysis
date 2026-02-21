@@ -341,6 +341,11 @@ class GithubGraphQLClient:
             "site": node.get("websiteUrl"),
         }
 
+        if typename == "Organization":
+            description = node.get("description")
+            if description is not None:
+                base["bio"] = description
+
         followers_block = node.get("followers")
         if isinstance(followers_block, dict):
             base["followers"] = followers_block.get("totalCount")
