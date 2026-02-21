@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Dict, Iterator, Optional
 
 import requests
+from requests import exceptions as requests_exceptions
 
 from .config import AppConfig
 
@@ -29,7 +30,7 @@ query ($owner: String!, $name: String!, $page_size: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     id
     databaseId
-    stargazers(first: $page_size, after: $cursor, orderBy: {field: STARRED_AT, direction: DESC}) {
+    stargazers(first: $page_size, after: $cursor) {
       pageInfo {
         endCursor
         hasNextPage
@@ -39,52 +40,30 @@ query ($owner: String!, $name: String!, $page_size: Int!, $cursor: String) {
         starredAt
         node {
           __typename
-          ... on User {
-            login
-            databaseId
-            name
-            bio
-            company
-            location
-            email
-            createdAt
-            updatedAt
-            followers {
-              totalCount
-            }
-            following {
-              totalCount
-            }
-            repositories(first: 0) {
-              totalCount
-            }
-            gists(first: 0) {
-              totalCount
-            }
-            isHireable
-            isSiteAdmin
-            isVerified
-            websiteUrl
+          login
+          databaseId
+          name
+          bio
+          company
+          location
+          email
+          createdAt
+          updatedAt
+          followers {
+            totalCount
           }
-          ... on Organization {
-            login
-            databaseId
-            name
-            description
-            company
-            location
-            email
-            createdAt
-            updatedAt
-            isVerified
-            websiteUrl
+          following {
+            totalCount
           }
-          ... on Bot {
-            login
-            databaseId
-            createdAt
-            updatedAt
+          repositories(first: 1) {
+            totalCount
           }
+          gists(first: 1) {
+            totalCount
+          }
+          isHireable
+          isSiteAdmin
+          websiteUrl
         }
       }
     }
@@ -186,7 +165,15 @@ class GithubGraphQLClient:
         attempt = 0
         while True:
             attempt += 1
-            response = self.session.post(self.api_url, json=payload, timeout=self.timeout)
+            try:
+                response = self.session.post(self.api_url, json=payload, timeout=self.timeout)
+            except requests_exceptions.RequestException as exc:
+                if attempt >= self.max_retries:
+                    raise RuntimeError("GraphQL request failed after retries due to connection error") from exc
+                delay = self._compute_backoff(attempt)
+                logger.warning("GraphQL request error %s. Retrying in %.1fs", exc.__class__.__name__, delay)
+                time.sleep(delay)
+                continue
             header_rate_limit = self._extract_rate_limit(response.headers)
 
             if response.status_code == 401:
