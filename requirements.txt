@@ -1,7 +1,7 @@
-pandas
 matplotlib
-seaborn
-requests
-gql
-sqlalchemy
+pandas
 python-dotenv
+pytest
+requests
+seaborn
+sqlalchemy
