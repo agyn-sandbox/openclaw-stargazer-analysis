@@ -1,7 +1,11 @@
-pandas
+alembic
 matplotlib
-seaborn
-requests
-gql
-sqlalchemy
+pandas
 python-dotenv
+pytest
+requests
+requests-cache
+seaborn
+sqlalchemy
+tabulate
+tenacity
