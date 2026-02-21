@@ -78,14 +78,14 @@ class FetchRunner:
                     processed = self._process_page(session, repository, fetch_run, page.edges)
                     total_processed += processed
 
-                    if processed:
-                        fetch_run.cursor_checkpoint = page.end_cursor
-                        fetch_run.page_checkpoint = page_number
+                    fetch_run.cursor_checkpoint = page.end_cursor
+                    fetch_run.page_checkpoint = page_number
+                    if page.edges:
                         fetch_run.last_starred_at_seen = page.edges[-1].starred_at
                     fetch_run.rate_limit_limit = page.rate_limit.limit
                     fetch_run.rate_limit_remaining = page.rate_limit.remaining
                     fetch_run.rate_limit_reset_at = page.rate_limit.reset_at
-                    fetch_run.rate_limit_used = page.rate_limit.used
+                    fetch_run.rate_limit_used = page.rate_limit.cost
                     session.flush()
 
             except Exception as exc:
