@@ -42,6 +42,7 @@ class GithubRestClient:
         self.max_retries = config.max_retries
         self.backoff_min = config.backoff_min_seconds
         self.backoff_max = config.backoff_max_seconds
+        self._last_rate_limit: Optional[RateLimitState] = None
 
     def fetch_user_profile(self, login: str) -> Optional[Dict[str, object]]:
         path = f"/users/{login}"
@@ -51,22 +52,38 @@ class GithubRestClient:
 
         data = response.json()
         account_type = data.get("type")
-        verified_badge: Optional[bool] = None
+        verified_badge = self._coerce_optional_bool(data.get("verified"))
+        if verified_badge is None:
+            verified_badge = self._coerce_optional_bool(data.get("is_verified"))
 
         if account_type == "Organization":
             org_path = f"/orgs/{login}"
             org_response = self._request("GET", org_path, allow_not_found=True)
             if org_response is not None:
                 org_data = org_response.json()
-                verified_value = org_data.get("is_verified")
-                if verified_value is not None:
-                    verified_badge = bool(verified_value)
+                org_verified = self._coerce_optional_bool(org_data.get("is_verified"))
+                if org_verified is None:
+                    org_verified = self._coerce_optional_bool(org_data.get("verified"))
+                if org_verified is not None:
+                    verified_badge = org_verified
 
         return {
-            "site_admin": data.get("site_admin", False),
+            "site_admin": bool(data.get("site_admin", False)),
             "site": data.get("blog") or data.get("html_url"),
             "type": account_type,
             "verified_badge": verified_badge,
+            "name": data.get("name"),
+            "bio": data.get("bio"),
+            "company": data.get("company"),
+            "location": data.get("location"),
+            "created_at": self._parse_datetime(data.get("created_at")),
+            "updated_at": self._parse_datetime(data.get("updated_at")),
+            "followers_count": self._safe_int(data.get("followers")),
+            "following_count": self._safe_int(data.get("following")),
+            "public_repos_count": self._safe_int(data.get("public_repos")),
+            "public_gists_count": self._safe_int(data.get("public_gists")),
+            "hireable": data.get("hireable"),
+            "email_public": bool(data.get("email")),
         }
 
     def fetch_recent_public_events(
@@ -122,6 +139,19 @@ class GithubRestClient:
             attempt += 1
             response = self.session.request(method, url, params=params, timeout=self.timeout)
             rate_limit = self._parse_rate_limit(response.headers)
+            self._last_rate_limit = rate_limit
+
+            content_lower = response.text.lower() if response.text else ""
+            if "timestamp outside allowed skew" in content_lower:
+                wait = 60.0
+                logger.warning(
+                    "REST timestamp skew detected on %s. Sleeping %.1fs before retrying.",
+                    path,
+                    wait,
+                )
+                time.sleep(wait)
+                attempt = 0
+                continue
 
             if response.status_code == 403 and rate_limit.remaining == 0:
                 self._sleep_until_reset(rate_limit)
@@ -142,6 +172,10 @@ class GithubRestClient:
             response.raise_for_status()
             return response
 
+    @property
+    def last_rate_limit(self) -> Optional[RateLimitState]:
+        return self._last_rate_limit
+
     def _parse_rate_limit(self, headers: Dict[str, str]) -> RateLimitState:
         limit = self._safe_int(headers.get("X-RateLimit-Limit"))
         remaining = self._safe_int(headers.get("X-RateLimit-Remaining"))
@@ -160,12 +194,33 @@ class GithubRestClient:
         return random.uniform(self.backoff_min, ceiling)
 
     @staticmethod
-    def _safe_int(value: Optional[str]) -> Optional[int]:
+    def _coerce_optional_bool(value: Optional[object]) -> Optional[bool]:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes"}:
+                return True
+            if lowered in {"false", "0", "no"}:
+                return False
+        if isinstance(value, (int, float)):
+            if value == 1:
+                return True
+            if value == 0:
+                return False
+        return None
+
+    @staticmethod
+    def _safe_int(value: Optional[object]) -> Optional[int]:
         if value is None:
             return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and not value.strip():
+            return None
         try:
-            return int(value)
-        except ValueError:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
             return None
 
     @staticmethod

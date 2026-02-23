@@ -142,6 +142,13 @@ class Reporter:
 
     def _build_report(self, df: pd.DataFrame, figures: dict[str, str]) -> str:
         total = len(df)
+        enriched_df = df[df["counts_enriched"]]
+        enriched_total = len(enriched_df)
+        coverage_fraction = (enriched_total / total) if total else 0.0
+        coverage_label = (
+            f"{enriched_total:,}/{total:,} users ({coverage_fraction * 100:.2f}%)" if total else "0/0"
+        )
+
         likely_bot = df.loc[df["bot_score"] >= 60]
         suspicious = df.loc[(df["bot_score"] >= 40) & (df["bot_score"] < 60)]
         likely_human = df.loc[df["bot_score"] < 40]
@@ -155,12 +162,17 @@ class Reporter:
         )
         location_summary = ", ".join(f"{loc} ({count})" for loc, count in top_locations.items()) or "None reported"
 
-        avg_account_age = df["account_age_days"].dropna().mean()
-        avg_followers = df["followers_count"].dropna().mean()
+        account_age_series = enriched_df["account_age_days"].dropna()
+        avg_account_age = float(account_age_series.mean()) if not account_age_series.empty else None
+        follower_series = enriched_df["followers_count"].dropna()
+        avg_followers = float(follower_series.mean()) if not follower_series.empty else None
         events_sampled = df["recent_event_count_90d"].dropna()
         events_coverage = len(events_sampled) / total * 100 if total else 0
 
         generated_at = utc_now().strftime("%Y-%m-%d %H:%M UTC")
+
+        avg_account_age_str = f"{avg_account_age:.0f}" if avg_account_age is not None else "n/a"
+        avg_followers_str = f"{avg_followers:.1f}" if avg_followers is not None else "n/a"
 
         return "\n".join(
             [
@@ -168,6 +180,7 @@ class Reporter:
                 "",
                 "## Executive Summary",
                 f"- Total stargazers analyzed: **{total}**",
+                f"- Enrichment coverage: **{coverage_label}**",
                 f"- Likely bots (score ≥60): **{len(likely_bot)} ({bot_pct:.1f}%)**",
                 f"- Suspicious (score 40–59): **{len(suspicious)} ({suspicious_pct:.1f}%)**",
                 f"- Likely human (score ≤39): **{len(likely_human)} ({human_pct:.1f}%)**",
@@ -185,8 +198,8 @@ class Reporter:
                 "  +10 for blank profiles, −30 for site-admin verified staff.",
                 "",
                 "## Results",
-                f"- Average account age: **{avg_account_age:.0f} days** (where available).",
-                f"- Average followers: **{avg_followers:.1f}** (where available).",
+                f"- Average account age: **{avg_account_age_str} days** (enriched sample).",
+                f"- Average followers: **{avg_followers_str}** (enriched sample).",
                 f"- Public event sampling coverage: **{events_coverage:.1f}%** of users.",
                 f"- ![Bot labels](figures/{figures['bot_label_distribution']})",
                 f"- ![Bot scores](figures/{figures['bot_score_histogram']})",

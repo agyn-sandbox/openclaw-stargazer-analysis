@@ -4,6 +4,10 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+.python-deps/
+.py_path
+py_path.txt
+logs/
 
 # Data and reports
 /data/*

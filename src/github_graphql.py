@@ -19,18 +19,16 @@ logger = logging.getLogger(__name__)
 
 
 STARGAZER_QUERY = """
-query ($owner: String!, $name: String!, $page_size: Int!, $cursor: String) {
+query ($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
   rateLimit {
-    cost
     limit
     remaining
     resetAt
     used
+    cost
   }
   repository(owner: $owner, name: $name) {
-    id
-    databaseId
-    stargazers(first: $page_size, after: $cursor) {
+    stargazers(first: $pageSize, after: $cursor, orderBy: { field: STARRED_AT, direction: DESC }) {
       pageInfo {
         endCursor
         hasNextPage
@@ -42,28 +40,29 @@ query ($owner: String!, $name: String!, $page_size: Int!, $cursor: String) {
           __typename
           login
           databaseId
-          name
-          bio
-          company
-          location
-          email
-          createdAt
-          updatedAt
-          followers {
-            totalCount
+          ... on User {
+            name
+            bio
+            company
+            location
+            websiteUrl
+            createdAt
+            updatedAt
+            isHireable
+            isSiteAdmin
+            followers(first: 1) {
+              totalCount
+            }
+            following(first: 1) {
+              totalCount
+            }
+            repositories(privacy: PUBLIC, first: 1) {
+              totalCount
+            }
+            gists(first: 1) {
+              totalCount
+            }
           }
-          following {
-            totalCount
-          }
-          repositories(first: 1) {
-            totalCount
-          }
-          gists(first: 1) {
-            totalCount
-          }
-          isHireable
-          isSiteAdmin
-          websiteUrl
         }
       }
     }
@@ -102,6 +101,7 @@ class GithubGraphQLClient:
     api_url = "https://api.github.com/graphql"
 
     def __init__(self, config: AppConfig):
+        self.config = config
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -114,6 +114,9 @@ class GithubGraphQLClient:
         self.max_retries = config.max_retries
         self.backoff_min = config.backoff_min_seconds
         self.backoff_max = config.backoff_max_seconds
+        self.pacing_min_interval = 0.5
+        self.pacing_max_interval = 1.0
+        self._last_request_time: Optional[float] = None
 
     def iter_stargazers(
         self,
@@ -126,8 +129,11 @@ class GithubGraphQLClient:
         cursor = start_cursor
         fetched = 0
 
+        effective_page_size = min(page_size or self.config.default_page_size, 100)
+
         while True:
-            page = self._fetch_page(owner, name, page_size, cursor)
+            page = self._fetch_page(owner, name, effective_page_size, cursor)
+            should_continue = True
 
             edges = page.edges
             if max_users is not None:
@@ -137,6 +143,7 @@ class GithubGraphQLClient:
                 if len(edges) > remaining:
                     edges = edges[:remaining]
                     page = replace(page, edges=edges)
+                    should_continue = False
 
             yield page
 
@@ -149,6 +156,9 @@ class GithubGraphQLClient:
             if not page.has_next_page or not page.end_cursor:
                 break
 
+            if should_continue:
+                self._maybe_wait_for_rate_limit(page.rate_limit)
+
             cursor = page.end_cursor
 
     def _fetch_page(self, owner: str, name: str, page_size: int, cursor: Optional[str]) -> StargazerPage:
@@ -157,14 +167,15 @@ class GithubGraphQLClient:
             "variables": {
                 "owner": owner,
                 "name": name,
-                "page_size": page_size,
                 "cursor": cursor,
+                "pageSize": page_size,
             },
         }
 
         attempt = 0
         while True:
             attempt += 1
+            self._respect_pacing()
             try:
                 response = self.session.post(self.api_url, json=payload, timeout=self.timeout)
             except requests_exceptions.RequestException as exc:
@@ -179,11 +190,62 @@ class GithubGraphQLClient:
             if response.status_code == 401:
                 raise RuntimeError("GitHub GraphQL API returned 401 Unauthorized. Check token scope.")
 
-            if response.status_code == 403 and header_rate_limit.remaining == 0:
-                self._sleep_until_reset(header_rate_limit)
-                continue
+            if response.status_code == 403:
+                try:
+                    error_payload = response.json()
+                except ValueError:
+                    error_payload = {}
+
+                errors = error_payload.get("errors") or []
+                message = error_payload.get("message", "")
+                message_lower = message.lower()
+
+                rate_limited = (
+                    header_rate_limit.remaining == 0
+                    or "rate limit" in message_lower
+                    or any("rate limit" in (err.get("message", "").lower()) for err in errors)
+                )
+                if rate_limited:
+                    if header_rate_limit.reset_at is not None:
+                        self._sleep_until_reset(header_rate_limit)
+                    else:
+                        wait = max(self.backoff_min, 60.0)
+                        logger.warning(
+                            "GraphQL rate limit without reset time (cursor %s). Sleeping %.1fs.",
+                            cursor,
+                            wait,
+                        )
+                        time.sleep(wait)
+                        self._last_request_time = None
+                    continue
+
+                if "abuse" in message_lower or "secondary rate" in message_lower:
+                    wait = self.backoff_max
+                    logger.warning(
+                        "GraphQL abuse detection triggered (cursor %s). Sleeping %.1fs before retrying.",
+                        cursor,
+                        wait,
+                    )
+                    time.sleep(wait)
+                    self._last_request_time = None
+                    continue
+
+                response.raise_for_status()
 
             if response.status_code >= 500:
+                content_lower = response.text.lower() if response.text else ""
+                if "timestamp outside allowed skew" in content_lower:
+                    wait = 60.0
+                    logger.warning(
+                        "GraphQL server timestamp skew (HTTP %s). Sleeping %.1fs before retrying cursor %s.",
+                        response.status_code,
+                        wait,
+                        cursor,
+                    )
+                    self._last_request_time = None
+                    attempt = 0
+                    time.sleep(wait)
+                    continue
                 if attempt >= self.max_retries:
                     response.raise_for_status()
                 delay = self._compute_backoff(attempt)
@@ -197,6 +259,17 @@ class GithubGraphQLClient:
             if "errors" in payload_json:
                 errors = payload_json["errors"]
                 message = ", ".join(err.get("message", "Unknown error") for err in errors)
+                if any("timestamp outside allowed skew" in err.get("message", "").lower() for err in errors):
+                    wait = 60.0
+                    logger.warning(
+                        "GraphQL timestamp skew detected. Sleeping %.1fs before retrying cursor %s.",
+                        wait,
+                        cursor,
+                    )
+                    time.sleep(wait)
+                    self._last_request_time = None
+                    attempt = 0
+                    continue
                 rate_limited = any(
                     err.get("type") == "RATE_LIMITED" or "rate limit" in err.get("message", "").lower()
                     for err in errors
@@ -247,68 +320,52 @@ class GithubGraphQLClient:
     @staticmethod
     def _translate_node(node: Dict[str, object]) -> Dict[str, object]:
         typename = node["__typename"]
-        base = {
+        base: Dict[str, object] = {
             "type": typename,
             "login": node.get("login"),
             "github_id": node.get("databaseId"),
             "created_at": GithubGraphQLClient._parse_datetime(node.get("createdAt")),
             "updated_at": GithubGraphQLClient._parse_datetime(node.get("updatedAt")),
+            "name": node.get("name"),
+            "bio": node.get("bio"),
+            "company": node.get("company"),
+            "location": node.get("location"),
+            "followers": None,
+            "following": None,
+            "public_repos": None,
+            "public_gists": None,
+            "hireable": node.get("isHireable"),
+            "email_public": None,
+            "verified": node.get("isVerified"),
+            "site_admin": node.get("isSiteAdmin"),
+            "site": node.get("websiteUrl"),
         }
 
-        if typename == "User":
-            base.update(
-                {
-                    "name": node.get("name"),
-                    "bio": node.get("bio"),
-                    "company": node.get("company"),
-                    "location": node.get("location"),
-                    "followers": (node.get("followers") or {}).get("totalCount"),
-                    "following": (node.get("following") or {}).get("totalCount"),
-                    "public_repos": (node.get("repositories") or {}).get("totalCount"),
-                    "public_gists": (node.get("gists") or {}).get("totalCount"),
-                    "hireable": node.get("isHireable"),
-                    "email_public": bool(node.get("email")),
-                    "verified": node.get("isVerified"),
-                    "site_admin": node.get("isSiteAdmin"),
-                    "site": node.get("websiteUrl"),
-                }
-            )
-        elif typename == "Organization":
-            base.update(
-                {
-                    "name": node.get("name"),
-                    "bio": node.get("description"),
-                    "company": node.get("company"),
-                    "location": node.get("location"),
-                    "followers": None,
-                    "following": None,
-                    "public_repos": None,
-                    "public_gists": None,
-                    "hireable": None,
-                    "email_public": bool(node.get("email")),
-                    "verified": node.get("isVerified"),
-                    "site_admin": False,
-                    "site": node.get("websiteUrl"),
-                }
-            )
-        else:  # Bot or other actor
-            base.update(
-                {
-                    "name": None,
-                    "bio": None,
-                    "company": None,
-                    "location": None,
-                    "followers": None,
-                    "following": None,
-                    "public_repos": None,
-                    "public_gists": None,
-                    "hireable": None,
-                    "email_public": None,
-                    "verified": None,
-                    "site_admin": False,
-                    "site": None,
-                }
-            )
+        if typename == "Organization":
+            description = node.get("description")
+            if description is not None:
+                base["bio"] = description
+
+        followers_block = node.get("followers")
+        if isinstance(followers_block, dict):
+            base["followers"] = followers_block.get("totalCount")
+
+        following_block = node.get("following")
+        if isinstance(following_block, dict):
+            base["following"] = following_block.get("totalCount")
+
+        repositories_block = node.get("repositories")
+        if isinstance(repositories_block, dict):
+            base["public_repos"] = repositories_block.get("totalCount")
+
+        gists_block = node.get("gists")
+        if isinstance(gists_block, dict):
+            base["public_gists"] = gists_block.get("totalCount")
+
+        if base["site_admin"] is not None:
+            base["site_admin"] = bool(base["site_admin"])
+        if base["verified"] is not None:
+            base["verified"] = bool(base["verified"])
 
         return base
 
@@ -345,6 +402,7 @@ class GithubGraphQLClient:
         wait_time = max(delta, 1.0)
         logger.warning("Hit GraphQL rate limit. Sleeping %.1fs until reset.", wait_time)
         time.sleep(wait_time)
+        self._last_request_time = None
 
     def _compute_backoff(self, attempt: int) -> float:
         ceiling = min(self.backoff_max, self.backoff_min * (2 ** attempt))
@@ -358,3 +416,22 @@ class GithubGraphQLClient:
             return int(value)
         except ValueError:
             return None
+
+    def _respect_pacing(self) -> None:
+        now = time.monotonic()
+        if self._last_request_time is None:
+            self._last_request_time = now
+            return
+
+        target_interval = random.uniform(self.pacing_min_interval, self.pacing_max_interval)
+        elapsed = now - self._last_request_time
+        if elapsed < target_interval:
+            time.sleep(target_interval - elapsed)
+        self._last_request_time = time.monotonic()
+
+    def _maybe_wait_for_rate_limit(self, info: RateLimitInfo) -> None:
+        if info.remaining is None or info.cost is None:
+            return
+
+        if info.remaining <= max(info.cost, 1):
+            self._sleep_until_reset(info)

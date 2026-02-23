@@ -79,6 +79,11 @@ def load_analysis_dataframe(session: Session, repo: str, metrics_version: str) -
 
     now = utc_now()
     df["account_age_days"] = df["created_at"].apply(lambda ts: (now - ts).days if pd.notnull(ts) else None)
+    df["counts_enriched"] = (
+        df[["followers_count", "following_count", "public_repos_count", "public_gists_count"]]
+        .notnull()
+        .all(axis=1)
+    )
     return df
 
 
@@ -119,7 +124,21 @@ class Analyzer:
         self._write_stars_time_series(df)
 
         summary_path = self.args.out_dir / "analysis_metadata.txt"
-        summary_path.write_text(f"generated_at={timestamp}\nrows={len(df)}\n")
+        enriched_total = int(df["counts_enriched"].sum())
+        coverage_fraction = enriched_total / len(df)
+        logger.info(
+            "Enriched profile coverage: %s/%s (%.2f%%)",
+            enriched_total,
+            len(df),
+            coverage_fraction * 100,
+        )
+        summary_lines = [
+            f"generated_at={timestamp}",
+            f"rows={len(df)}",
+            f"counts_enriched={enriched_total}",
+            f"counts_coverage={coverage_fraction:.6f}",
+        ]
+        summary_path.write_text("\n".join(summary_lines) + "\n")
 
     def _write_bot_distribution(self, df: pd.DataFrame) -> None:
         if "bot_label" not in df.columns:

@@ -6,7 +6,9 @@ import argparse
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Optional
+
+from requests import exceptions as requests_exceptions
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -50,13 +52,10 @@ class FetchRunner:
         self.config = config
         self.args = args
         self.graphql = GithubGraphQLClient(config)
-        self.rest = GithubRestClient(config) if self._needs_rest_client else None
+        self.rest = GithubRestClient(config)
+        self._org_verified_cache: Dict[str, Optional[bool]] = {}
         engine = init_db(config.database_url)
         self.session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
-
-    @property
-    def _needs_rest_client(self) -> bool:
-        return self.args.rest_enrichment or self.args.events != "none"
 
     def run(self) -> None:
         with session_scope(self.session_factory) as session:
@@ -78,14 +77,17 @@ class FetchRunner:
                     processed = self._process_page(session, repository, fetch_run, page.edges)
                     total_processed += processed
 
-                    if processed:
-                        fetch_run.cursor_checkpoint = page.end_cursor
-                        fetch_run.page_checkpoint = page_number
+                    fetch_run.cursor_checkpoint = page.end_cursor
+                    fetch_run.page_checkpoint = page_number
+                    if page.edges:
                         fetch_run.last_starred_at_seen = page.edges[-1].starred_at
                     fetch_run.rate_limit_limit = page.rate_limit.limit
                     fetch_run.rate_limit_remaining = page.rate_limit.remaining
                     fetch_run.rate_limit_reset_at = page.rate_limit.reset_at
-                    fetch_run.rate_limit_used = page.rate_limit.used
+                    rate_limit_used = page.rate_limit.used
+                    if rate_limit_used is None:
+                        rate_limit_used = page.rate_limit.cost
+                    fetch_run.rate_limit_used = rate_limit_used
                     session.flush()
 
             except Exception as exc:
@@ -155,6 +157,7 @@ class FetchRunner:
                 continue
 
             user = self._upsert_user(session, snapshot)
+            self._ensure_org_verified_badge(user, snapshot)
             self._upsert_stargazer(session, repository, user, edge)
 
             if self.rest and self.args.rest_enrichment:
@@ -225,12 +228,43 @@ class FetchRunner:
         user.email_public = snapshot.email_public
         if snapshot.verified is not None:
             user.verified_badge = snapshot.verified
-        elif user.verified_badge is None:
-            user.verified_badge = False
         if snapshot.site:
             user.site = snapshot.site
 
         return user
+
+    def _ensure_org_verified_badge(self, user: User, snapshot: UserSnapshot) -> None:
+        if snapshot.account_type != "Organization":
+            return
+        if user.verified_badge is not None:
+            return
+        if self.rest is None:
+            return
+
+        login = snapshot.login
+        if login in self._org_verified_cache:
+            cached = self._org_verified_cache[login]
+            if cached is not None:
+                user.verified_badge = cached
+            return
+
+        try:
+            profile = self.rest.fetch_user_profile(login)
+        except (requests_exceptions.RequestException, RuntimeError):
+            logger.warning("REST fallback for %s failed while fetching verified badge.", login, exc_info=True)
+            self._org_verified_cache[login] = None
+            return
+        verified_badge = None
+        if profile is not None:
+            value = profile.get("verified_badge")
+            if isinstance(value, bool):
+                verified_badge = value
+                user.verified_badge = verified_badge
+            elif value is not None:
+                verified_badge = bool(value)
+                user.verified_badge = verified_badge
+
+        self._org_verified_cache[login] = verified_badge
 
     def _upsert_stargazer(self, session: Session, repository: Repository, user: User, edge: StargazerEdge) -> None:
         stmt = select(Stargazer).where(
@@ -269,9 +303,50 @@ class FetchRunner:
             user.type = str(profile_type)
         verified_badge = profile.get("verified_badge")
         if verified_badge is not None:
-            user.verified_badge = bool(verified_badge)
-        elif profile_type != "Organization" and user.verified_badge is None:
-            user.verified_badge = False
+            verified_bool = bool(verified_badge)
+            user.verified_badge = verified_bool
+            if snapshot.account_type == "Organization":
+                self._org_verified_cache[snapshot.login] = verified_bool
+
+        name = profile.get("name")
+        if name is not None:
+            user.name = name
+        bio = profile.get("bio")
+        if bio is not None:
+            user.bio = bio
+        company = profile.get("company")
+        if company is not None:
+            user.company = company
+        location = profile.get("location")
+        if location is not None:
+            user.location = location
+
+        created_at = profile.get("created_at")
+        if created_at is not None:
+            user.created_at = created_at
+        updated_at = profile.get("updated_at")
+        if updated_at is not None:
+            user.updated_at = updated_at
+
+        followers = profile.get("followers_count")
+        if followers is not None:
+            user.followers_count = followers
+        following = profile.get("following_count")
+        if following is not None:
+            user.following_count = following
+        public_repos = profile.get("public_repos_count")
+        if public_repos is not None:
+            user.public_repos_count = public_repos
+        public_gists = profile.get("public_gists_count")
+        if public_gists is not None:
+            user.public_gists_count = public_gists
+
+        hireable = profile.get("hireable")
+        if hireable is not None:
+            user.hireable = hireable  # already bool/None from API
+        email_public = profile.get("email_public")
+        if email_public is not None:
+            user.email_public = bool(email_public)
 
     def _collect_events(self, session: Session, fetch_run: FetchRun, user: User) -> None:
         if self.rest is None:
