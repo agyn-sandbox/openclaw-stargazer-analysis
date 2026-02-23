@@ -1,4 +1,5 @@
 # openclaw-stargazer-analysis
+[![Agyn badge](https://agyn.io/badges/badge_dark.svg)](http://agyn.io)
 
 Analysis toolkit to fetch and analyze stargazers of `openclaw/openclaw`, store results in SQLite, and generate a bot-likelihood report.
 
